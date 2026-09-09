@@ -1,0 +1,46 @@
+name: Update nowwhy.kr data
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nowwhy-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore rolling collector state
+        uses: actions/cache/restore@v4
+        with:
+          path: collector/data
+          key: nowwhy-data-${{ github.run_id }}
+          restore-keys: nowwhy-data-
+      - name: Collect signals, analyze changed topics, and publish
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          NAVER_API_HUB_CLIENT_ID: ${{ secrets.NAVER_API_HUB_CLIENT_ID }}
+          NAVER_API_HUB_CLIENT_SECRET: ${{ secrets.NAVER_API_HUB_CLIENT_SECRET }}
+          SITE_UPLOAD_URL: https://nowwhy.kr
+          SITE_UPLOAD_TOKEN: ${{ secrets.SITE_UPLOAD_TOKEN }}
+          SUDDENLYWHY_DATA_DIR: ${{ github.workspace }}/collector/data
+        run: python collector/cloud_runner.py
+      - name: Save rolling collector state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: collector/data
+          key: nowwhy-data-${{ github.run_id }}
+
+
