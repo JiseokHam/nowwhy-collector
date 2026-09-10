@@ -80,12 +80,21 @@ def publish() -> None:
     request = urllib.request.Request(
         f"{base_url}/api/admin/import",
         data=body,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; nowwhy-collector/1.0; +https://nowwhy.kr)",
+        },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
-        if response.status >= 300:
-            raise RuntimeError(f"site upload failed: HTTP {response.status}")
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"site upload failed: HTTP {response.status}")
+    except urllib.error.HTTPError as error:
+        response_text = error.read(1000).decode("utf-8", errors="replace")
+        raise RuntimeError(f"site upload failed: HTTP {error.code}: {response_text}") from error
 
 
 def main() -> int:
