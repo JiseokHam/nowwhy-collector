@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thirty-minute signal check with changed-only AI analysis and two-hour safety refresh."""
+"""Thirty-minute signal check, cached AI analysis and hourly safety refresh."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +23,7 @@ HISTORY_PATHS = {
     "7d": DATA_DIR / "suddenlywhy_history_7d.json",
     "30d": DATA_DIR / "suddenlywhy_history_30d.json",
 }
-FORCE_SECONDS = int(os.environ.get("SUDDENLYWHY_FORCE_ANALYSIS_SECONDS", "7200"))
+FORCE_SECONDS = int(os.environ.get("SUDDENLYWHY_FORCE_ANALYSIS_SECONDS", "3600"))
 
 
 def read_json(path: Path, default):
@@ -55,7 +56,7 @@ def needs_analysis(previous: dict, current_topics: list[str], now_epoch: int) ->
     if not FINAL_PATH.exists() or not previous_topics:
         return True, "first full analysis"
     if now_epoch - last_full >= FORCE_SECONDS:
-        return True, "two-hour safety refresh"
+        return True, "hourly safety refresh"
     if current_topics[:3] != previous_topics[:3]:
         return True, "top-three signal changed"
     changed = len(set(current_topics).symmetric_difference(previous_topics))
@@ -100,11 +101,14 @@ def publish() -> None:
 def main() -> int:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     os.environ["SUDDENLYWHY_DATA_DIR"] = str(DATA_DIR)
+    previous_status = read_json(STATUS_PATH, {})
     signal_code = run_collector("--signals-only")
     if signal_code:
+        write_json(STATUS_PATH, {**previous_status, "state": "error", "message": "검색 신호 확인에 실패했습니다. 마지막 정상 순위를 유지합니다.", "lastAttemptAt": datetime.now(timezone.utc).isoformat()})
         publish()
         return signal_code
 
+    checked_at = datetime.now(timezone.utc).isoformat()
     now_epoch = int(datetime.now(timezone.utc).timestamp())
     previous = read_json(STATE_PATH, {})
     topics = topics_from_raw()
@@ -115,11 +119,19 @@ def main() -> int:
         result_code = run_collector()
         if result_code == 0:
             topics = topics_from_raw()
-            write_json(STATE_PATH, {"lastFullEpoch": now_epoch, "topics": topics, "reason": reason})
+    status = read_json(STATUS_PATH, {})
+    status["lastCheckedAt"] = checked_at
+    status["checkIntervalMinutes"] = 30
+    status["analysisIntervalMinutes"] = FORCE_SECONDS // 60
+    if result_code and status.get("state") not in {"error", "quota_exhausted"}:
+        status.update(state="error", message="전체 분석에 실패했습니다. 마지막 정상 순위를 유지합니다.")
+    write_json(STATUS_PATH, status)
     publish()
+    # Only advance the checkpoint once the website has accepted the payload.
+    if analyze and result_code == 0:
+        write_json(STATE_PATH, {"lastFullEpoch": now_epoch, "topics": topics, "reason": reason})
     return result_code
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
