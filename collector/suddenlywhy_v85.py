@@ -75,8 +75,11 @@ CANONICAL_ALIASES = {
 }
 
 
+KST = timezone(timedelta(hours=9), name="Asia/Seoul")
+
+
 def now_local() -> datetime:
-    return datetime.now().astimezone()
+    return datetime.now(KST)
 
 
 def desktop_dir() -> Path:
