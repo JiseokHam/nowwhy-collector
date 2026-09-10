@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify scheduler safety (no API calls)
+        run: python -m unittest discover -s tests -p test_scheduler.py
       - name: Restore rolling collector state
         uses: actions/cache/restore@v4
         with:
