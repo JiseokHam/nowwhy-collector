@@ -383,7 +383,7 @@ def write_status(state: str, message: str, run_now: datetime,
         "state": state,
         "message": message,
         "version": VERSION,
-        "lastAttemptAt": run_now.strftime("%Y-%m-%d %H:%M:%S"),
+        "lastAttemptAt": run_now.isoformat(),
         "lastSuccessfulAt": last_ok if last_ok is not None else last_successful_at(),
         **extra,
     }
@@ -1658,7 +1658,7 @@ def main()->int:
         if not final:
             raise RuntimeError("게시 가능한 결과가 0개라 마지막 정상 TOP10을 보존합니다.")
     api_usage=usage_summary()
-    final_payload={"generatedAt":run_now.strftime("%Y-%m-%d %H:%M:%S"),"version":VERSION,"model":FAST_MODEL,"verifyModel":VERIFY_MODEL,"embeddingModel":EMBEDDING_MODEL if USE_EMBEDDINGS else None,"note":"Free hourly signals are separated from changed-topic AI analysis and final evidence verification.","stats":{"poolHours":pool_hours,"rawCandidates":len(raw),"analyzedCandidates":analyzed,"publishableCount":len(final),"reusedAnalyses":reused,"finalVerifyRejected":final_rejected,"broadAttempted":len([b for b in broad if b.get('attempted')]),"broadRescued":rescued,"genericFastRejected":generic_skipped,"embeddingEnabled":USE_EMBEDDINGS},"apiUsage":api_usage,"rankings":final,"rejected":rejected}
+    final_payload={"generatedAt":run_now.isoformat(),"version":VERSION,"model":FAST_MODEL,"verifyModel":VERIFY_MODEL,"embeddingModel":EMBEDDING_MODEL if USE_EMBEDDINGS else None,"note":"Free hourly signals are separated from changed-topic AI analysis and final evidence verification.","stats":{"poolHours":pool_hours,"rawCandidates":len(raw),"analyzedCandidates":analyzed,"publishableCount":len(final),"reusedAnalyses":reused,"finalVerifyRejected":final_rejected,"broadAttempted":len([b for b in broad if b.get('attempted')]),"broadRescued":rescued,"genericFastRejected":generic_skipped,"embeddingEnabled":USE_EMBEDDINGS},"apiUsage":api_usage,"rankings":final,"rejected":rejected}
     json_dump(FINAL_PATH,final_payload)
     json_dump(TOP_PATH,final_payload)
     json_dump(LAST_GOOD_PATH,final_payload)
