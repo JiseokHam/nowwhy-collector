@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -24,6 +25,11 @@ HISTORY_PATHS = {
     "30d": DATA_DIR / "suddenlywhy_history_30d.json",
 }
 FORCE_SECONDS = int(os.environ.get("SUDDENLYWHY_FORCE_ANALYSIS_SECONDS", "3600"))
+MIN_CHECK_SECONDS = 15 * 60
+
+
+def outbox_path() -> Path:
+    return DATA_DIR / "pending_publication.json"
 
 
 def read_json(path: Path, default):
@@ -70,14 +76,21 @@ def run_collector(*arguments: str) -> int:
     return subprocess.run(command, cwd=ROOT, check=False).returncode
 
 
+def queue_publication(checkpoint: dict) -> None:
+    snapshots = {"now": read_json(FINAL_PATH, {"rankings": []})}
+    snapshots.update({mode: read_json(path, {"rankings": []}) for mode, path in HISTORY_PATHS.items()})
+    write_json(outbox_path(), {"payload": {"snapshots": snapshots, "status": read_json(STATUS_PATH, {"state": "error"})}, "checkpoint": checkpoint})
+
+
 def publish() -> None:
     base_url = os.environ.get("SITE_UPLOAD_URL", "").rstrip("/")
     token = os.environ.get("SITE_UPLOAD_TOKEN", "")
     if not base_url or not token:
         raise RuntimeError("SITE_UPLOAD_URL and SITE_UPLOAD_TOKEN are required")
-    snapshots = {"now": read_json(FINAL_PATH, {"rankings": []})}
-    snapshots.update({mode: read_json(path, {"rankings": []}) for mode, path in HISTORY_PATHS.items()})
-    body = json.dumps({"snapshots": snapshots, "status": read_json(STATUS_PATH, {"state": "error"})}, ensure_ascii=False).encode("utf-8")
+    pending = read_json(outbox_path(), None)
+    if not isinstance(pending, dict) or not isinstance(pending.get("payload"), dict):
+        raise RuntimeError("pending publication is missing or invalid")
+    body = json.dumps(pending["payload"], ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         f"{base_url}/api/admin/import",
         data=body,
@@ -89,28 +102,49 @@ def publish() -> None:
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            if response.status >= 300:
-                raise RuntimeError(f"site upload failed: HTTP {response.status}")
-    except urllib.error.HTTPError as error:
-        response_text = error.read(1000).decode("utf-8", errors="replace")
-        raise RuntimeError(f"site upload failed: HTTP {error.code}: {response_text}") from error
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                if response.status != 200 or json.loads(response.read()).get("ok") is not True:
+                    raise RuntimeError("site did not acknowledge the publication")
+            break
+        except urllib.error.HTTPError as error:
+            if error.code not in {429, 500, 502, 503, 504} or attempt == 2:
+                raise RuntimeError(f"site upload failed: HTTP {error.code}; result saved for retry") from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise RuntimeError("site upload connection failed; result saved for retry") from None
+        time.sleep(2 ** attempt)
+    checkpoint = dict(pending.get("checkpoint") or {})
+    if pending["payload"].get("status", {}).get("state") in {"ok", "signals_ok"}:
+        checkpoint["lastPublishedEpoch"] = int(datetime.now(timezone.utc).timestamp())
+    write_json(STATE_PATH, checkpoint)
+    outbox_path().unlink(missing_ok=True)
 
 
 def main() -> int:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     os.environ["SUDDENLYWHY_DATA_DIR"] = str(DATA_DIR)
+    if outbox_path().exists():
+        print("[scheduler] retrying saved publication without new AI analysis")
+        publish()
+        return 0
+    previous = read_json(STATE_PATH, {})
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    elapsed = now_epoch - int(previous.get("lastPublishedEpoch") or 0)
+    if 0 <= elapsed < MIN_CHECK_SECONDS:
+        print("[scheduler] recent successful publication; duplicate trigger skipped")
+        return 0
     previous_status = read_json(STATUS_PATH, {})
     signal_code = run_collector("--signals-only")
     if signal_code:
         write_json(STATUS_PATH, {**previous_status, "state": "error", "message": "검색 신호 확인에 실패했습니다. 마지막 정상 순위를 유지합니다.", "lastAttemptAt": datetime.now(timezone.utc).isoformat()})
+        queue_publication(previous)
         publish()
         return signal_code
 
     checked_at = datetime.now(timezone.utc).isoformat()
     now_epoch = int(datetime.now(timezone.utc).timestamp())
-    previous = read_json(STATE_PATH, {})
     topics = topics_from_raw()
     analyze, reason = needs_analysis(previous, topics, now_epoch)
     print(f"[scheduler] {reason}; full_analysis={str(analyze).lower()}")
@@ -126,10 +160,11 @@ def main() -> int:
     if result_code and status.get("state") not in {"error", "quota_exhausted"}:
         status.update(state="error", message="전체 분석에 실패했습니다. 마지막 정상 순위를 유지합니다.")
     write_json(STATUS_PATH, status)
-    publish()
-    # Only advance the checkpoint once the website has accepted the payload.
+    checkpoint = dict(previous)
     if analyze and result_code == 0:
-        write_json(STATE_PATH, {"lastFullEpoch": now_epoch, "topics": topics, "reason": reason})
+        checkpoint.update(lastFullEpoch=now_epoch, topics=topics, reason=reason)
+    queue_publication(checkpoint)
+    publish()
     return result_code
 
 
