@@ -1,8 +1,6 @@
 name: Update nowwhy.kr data
 
 on:
-  schedule:
-    - cron: "17,47 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -37,6 +35,13 @@ jobs:
           SITE_UPLOAD_URL: https://nowwhy.kr
           SITE_UPLOAD_TOKEN: ${{ secrets.SITE_UPLOAD_TOKEN }}
           SUDDENLYWHY_DATA_DIR: ${{ github.workspace }}/collector/data
+          SUDDENLYWHY_FORCE_ANALYSIS_SECONDS: 10800
+          SUDDENLYWHY_MIN_ANALYSIS_SECONDS: 3600
+          SUDDENLYWHY_MONTHLY_BUDGET_USD: 5.50
+          SUDDENLYWHY_BUDGET_RUN_RESERVE_USD: 0.20
+          SUDDENLYWHY_BUDGET_COST_MULTIPLIER: 1.20
+          SUDDENLYWHY_BUDGET_SEED_MONTH: 2026-09
+          SUDDENLYWHY_BUDGET_SEED_SPEND_USD: 3.27
         run: python collector/cloud_runner.py
       - name: Save rolling collector state
         if: always()
