@@ -1286,10 +1286,10 @@ def broad_rescue(conn: sqlite3.Connection,item:dict[str,Any],normal:dict[str,Any
 FINAL_VERIFY_SCHEMA='''{
   "approved": true,
   "displayTopic": "사용자가 사건을 바로 이해할 수 있는 구체적인 제목",
-  "question": "근거에 맞게 다듬은 질문",
-  "whyNow": "근거에 맞게 다듬은 넓은 화면용 설명",
-  "whyNowMedium": "같은 사실의 중간 폭 설명",
-  "whyNowCompact": "같은 사실의 모바일용 설명",
+  "question": "수정이 필요할 때만 고친 질문, 아니면 빈 문자열",
+  "whyNow": "수정이 필요할 때만 고친 넓은 화면용 설명, 아니면 빈 문자열",
+  "whyNowMedium": "수정이 필요할 때만 고친 중간 폭 설명, 아니면 빈 문자열",
+  "whyNowCompact": "수정이 필요할 때만 고친 모바일용 설명, 아니면 빈 문자열",
   "reasonIfRejected": "거절 사유 또는 빈 문자열"
 }'''
 FINAL_VERIFY_INST='''당신은 '갑자기왜?'의 최종 사실 검증 편집자입니다.
@@ -1299,6 +1299,7 @@ FINAL_VERIFY_INST='''당신은 '갑자기왜?'의 최종 사실 검증 편집자
 다만 설명 속 일부 수치, 날짜, 장소나 부가 표현만 근거가 약하면 후보 전체를 거절하지 말고 그 표현을 삭제하거나 완화한 question과 whyNow 3종을 반환하세요.
 핵심 원인 자체가 뒷받침되지 않거나, 기사끼리 모순되거나, 현재 급상승과 무관한 오래된 사건일 때만 approved=false입니다.
 반환하는 문장에는 기사에 없는 사실을 새로 만들지 말고 자연스러운 존댓말 문장으로 작성하세요. whyNow 3종은 길이만 다르고 사실은 같아야 합니다.
+원문의 question과 whyNow가 근거에 맞으면 그대로 반복하지 말고 해당 네 필드를 모두 빈 문자열로 반환하세요. 수정이 필요한 경우에만 네 필드에 수정 문장을 넣으세요.
 displayTopic은 검색어를 그대로 반복하지 말고 이번 급상승 사건을 한눈에 알 수 있는 짧고 구체적인 한국어 제목으로 작성하세요.
 예를 들어 원 검색어가 '수력 발전'이고 근거가 네팔 수력발전소 홍수라면 '네팔 수력발전소 홍수'처럼 씁니다.
 사람 이름이나 작품명처럼 원 검색어 자체가 이미 구체적이면 그대로 유지해도 됩니다.'''
@@ -1703,4 +1704,3 @@ if __name__=="__main__":
         write_status("error",f"새 분석 중 오류가 발생했습니다: {e}",now_local(),
                      finalPreserved=usable_final(json_load(FINAL_PATH, {})),apiUsage=usage_summary())
         print("\n실행 실패\n"+str(e)); print("\n마지막 정상 TOP10은 보존됩니다."); print("환경변수: NAVER_API_HUB_CLIENT_ID / NAVER_API_HUB_CLIENT_SECRET / OPENAI_API_KEY"); raise SystemExit(1)
-
