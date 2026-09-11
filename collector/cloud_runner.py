@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thirty-minute signal check, cached AI analysis and hourly safety refresh."""
+"""Thirty-minute signals, change-aware AI analysis, and a monthly cost guard."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -24,8 +24,13 @@ HISTORY_PATHS = {
     "7d": DATA_DIR / "suddenlywhy_history_7d.json",
     "30d": DATA_DIR / "suddenlywhy_history_30d.json",
 }
-FORCE_SECONDS = int(os.environ.get("SUDDENLYWHY_FORCE_ANALYSIS_SECONDS", "3600"))
+FORCE_SECONDS = int(os.environ.get("SUDDENLYWHY_FORCE_ANALYSIS_SECONDS", "10800"))
+MIN_ANALYSIS_SECONDS = int(os.environ.get("SUDDENLYWHY_MIN_ANALYSIS_SECONDS", "3600"))
 MIN_CHECK_SECONDS = 15 * 60
+MONTHLY_BUDGET_USD = float(os.environ.get("SUDDENLYWHY_MONTHLY_BUDGET_USD", "5.50"))
+BUDGET_RUN_RESERVE_USD = float(os.environ.get("SUDDENLYWHY_BUDGET_RUN_RESERVE_USD", "0.20"))
+BUDGET_COST_MULTIPLIER = float(os.environ.get("SUDDENLYWHY_BUDGET_COST_MULTIPLIER", "1.20"))
+KST = timezone(timedelta(hours=9))
 
 
 def outbox_path() -> Path:
@@ -56,15 +61,91 @@ def topics_from_raw() -> list[str]:
     return topics
 
 
+def budget_month(now_epoch: int) -> str:
+    return datetime.fromtimestamp(now_epoch, timezone.utc).astimezone(KST).strftime("%Y-%m")
+
+
+def fetch_remote_status() -> dict:
+    base_url = os.environ.get("SITE_UPLOAD_URL", "").rstrip("/")
+    if not base_url:
+        return {}
+    request = urllib.request.Request(
+        f"{base_url}/api/status",
+        headers={"Accept": "application/json", "User-Agent": "nowwhy-collector/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            value = json.loads(response.read())
+            return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, urllib.error.URLError):
+        return {}
+
+
+def prepare_budget(previous: dict, remote_status: dict, now_epoch: int) -> dict:
+    month = budget_month(now_epoch)
+    candidates = []
+    for source in (previous, remote_status):
+        if str(source.get("budgetMonth") or "") == month:
+            try:
+                candidates.append(float(source.get("monthlyEstimatedSpendUsd") or 0.0))
+            except (TypeError, ValueError):
+                pass
+    seed_month = os.environ.get("SUDDENLYWHY_BUDGET_SEED_MONTH", "").strip()
+    if seed_month == month:
+        try:
+            candidates.append(float(os.environ.get("SUDDENLYWHY_BUDGET_SEED_SPEND_USD", "0")))
+        except ValueError:
+            pass
+    spent = max(candidates or [0.0])
+    return {
+        "budgetMonth": month,
+        "monthlyBudgetUsd": round(MONTHLY_BUDGET_USD, 4),
+        "monthlyEstimatedSpendUsd": round(spent, 6),
+    }
+
+
+def budget_allows_analysis(budget: dict) -> bool:
+    spent = float(budget.get("monthlyEstimatedSpendUsd") or 0.0)
+    return spent + BUDGET_RUN_RESERVE_USD <= MONTHLY_BUDGET_USD
+
+
+def add_analysis_cost(budget: dict, status: dict) -> dict:
+    usage = status.get("apiUsage") or {}
+    try:
+        estimated = float(usage.get("estimatedResponseCostUsd") or 0.0)
+    except (TypeError, ValueError):
+        estimated = 0.0
+    charged = max(0.0, estimated) * BUDGET_COST_MULTIPLIER
+    updated = dict(budget)
+    updated["monthlyEstimatedSpendUsd"] = round(
+        float(updated.get("monthlyEstimatedSpendUsd") or 0.0) + charged,
+        6,
+    )
+    return updated
+
+
+def apply_budget_status(status: dict, budget: dict, limited: bool) -> None:
+    spent = float(budget.get("monthlyEstimatedSpendUsd") or 0.0)
+    status.update(
+        budgetMonth=budget["budgetMonth"],
+        monthlyBudgetUsd=round(MONTHLY_BUDGET_USD, 2),
+        monthlyEstimatedSpendUsd=round(spent, 4),
+        monthlyBudgetRemainingUsd=round(max(0.0, MONTHLY_BUDGET_USD - spent), 4),
+        budgetLimited=limited,
+    )
+
+
 def needs_analysis(previous: dict, current_topics: list[str], now_epoch: int) -> tuple[bool, str]:
     last_full = int(previous.get("lastFullEpoch") or 0)
     previous_topics = [str(value) for value in previous.get("topics") or []]
     if not FINAL_PATH.exists() or not previous_topics:
         return True, "first full analysis"
+    if 0 <= now_epoch - last_full < MIN_ANALYSIS_SECONDS:
+        return False, "minimum paid-analysis interval"
     if now_epoch - last_full >= FORCE_SECONDS:
-        return True, "hourly safety refresh"
-    if current_topics[:3] != previous_topics[:3]:
-        return True, "top-three signal changed"
+        return True, "three-hour safety refresh"
+    if set(current_topics[:3]) != set(previous_topics[:3]):
+        return True, "a new topic entered the top three"
     changed = len(set(current_topics).symmetric_difference(previous_topics))
     if changed >= 4:
         return True, "two or more top-ten topics changed"
@@ -131,6 +212,8 @@ def main() -> int:
         return 0
     previous = read_json(STATE_PATH, {})
     now_epoch = int(datetime.now(timezone.utc).timestamp())
+    budget = prepare_budget(previous, fetch_remote_status(), now_epoch)
+    previous.update(budget)
     elapsed = now_epoch - int(previous.get("lastPublishedEpoch") or 0)
     if 0 <= elapsed < MIN_CHECK_SECONDS:
         print("[scheduler] recent successful publication; duplicate trigger skipped")
@@ -147,20 +230,27 @@ def main() -> int:
     now_epoch = int(datetime.now(timezone.utc).timestamp())
     topics = topics_from_raw()
     analyze, reason = needs_analysis(previous, topics, now_epoch)
+    budget_limited = analyze and not budget_allows_analysis(budget)
+    if budget_limited:
+        analyze = False
+        reason = "monthly AI budget guard"
     print(f"[scheduler] {reason}; full_analysis={str(analyze).lower()}")
     result_code = 0
     if analyze:
         result_code = run_collector()
+        budget = add_analysis_cost(budget, read_json(STATUS_PATH, {}))
         if result_code == 0:
             topics = topics_from_raw()
     status = read_json(STATUS_PATH, {})
     status["lastCheckedAt"] = checked_at
     status["checkIntervalMinutes"] = 30
     status["analysisIntervalMinutes"] = FORCE_SECONDS // 60
+    apply_budget_status(status, budget, budget_limited)
     if result_code and status.get("state") not in {"error", "quota_exhausted"}:
         status.update(state="error", message="전체 분석에 실패했습니다. 마지막 정상 순위를 유지합니다.")
     write_json(STATUS_PATH, status)
     checkpoint = dict(previous)
+    checkpoint.update(budget)
     if analyze and result_code == 0:
         checkpoint.update(lastFullEpoch=now_epoch, topics=topics, reason=reason)
     queue_publication(checkpoint)
