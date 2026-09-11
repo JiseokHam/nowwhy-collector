@@ -26,9 +26,29 @@ class SchedulerTests(unittest.TestCase):
         runner.write_json(runner.STATUS_PATH, {'state': 'ok', 'lastSuccessfulAt': 'old'})
         runner.write_json(runner.RAW_PATH, {'rankings': [{'topic': 'same'}]})
 
-    def test_hourly_and_stable(self):
-        self.assertFalse(runner.needs_analysis({'lastFullEpoch': 1000, 'topics': ['same']}, ['same'], 2799)[0])
-        self.assertTrue(runner.needs_analysis({'lastFullEpoch': 1000, 'topics': ['same']}, ['same'], 4600)[0])
+    def test_three_hour_safety_refresh(self):
+        self.assertFalse(runner.needs_analysis({'lastFullEpoch': 1000, 'topics': ['same']}, ['same'], 10799)[0])
+        self.assertTrue(runner.needs_analysis({'lastFullEpoch': 1000, 'topics': ['same']}, ['same'], 11800)[0])
+
+    def test_top_three_reordering_does_not_trigger_paid_analysis(self):
+        previous = {'lastFullEpoch': 1000, 'topics': ['a', 'b', 'c', 'd']}
+        self.assertFalse(runner.needs_analysis(previous, ['b', 'a', 'c', 'd'], 5000)[0])
+
+    def test_new_top_three_topic_triggers_after_minimum_interval(self):
+        previous = {'lastFullEpoch': 1000, 'topics': ['a', 'b', 'c', 'd']}
+        self.assertFalse(runner.needs_analysis(previous, ['x', 'a', 'b', 'c'], 2000)[0])
+        self.assertTrue(runner.needs_analysis(previous, ['x', 'a', 'b', 'c'], 5000)[0])
+
+    def test_budget_uses_largest_persisted_value_and_safety_multiplier(self):
+        with patch.dict(runner.os.environ, {'SUDDENLYWHY_BUDGET_SEED_MONTH':'', 'SUDDENLYWHY_BUDGET_SEED_SPEND_USD':'0'}):
+            budget = runner.prepare_budget(
+                {'budgetMonth':'2026-09', 'monthlyEstimatedSpendUsd':1.5},
+                {'budgetMonth':'2026-09', 'monthlyEstimatedSpendUsd':2.0},
+                1789052400,
+            )
+        self.assertEqual(budget['monthlyEstimatedSpendUsd'], 2.0)
+        updated = runner.add_analysis_cost(budget, {'apiUsage':{'estimatedResponseCostUsd':0.1}})
+        self.assertEqual(updated['monthlyEstimatedSpendUsd'], 2.12)
 
     def test_stable_check_publishes_truthful_timestamp_without_ai(self):
         with patch.object(runner, 'needs_analysis', return_value=(False, 'stable')), patch.object(runner, 'run_collector', return_value=0) as collect, patch.object(runner, 'publish'):
