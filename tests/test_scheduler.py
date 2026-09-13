@@ -50,6 +50,28 @@ class SchedulerTests(unittest.TestCase):
         updated = runner.add_analysis_cost(budget, {'apiUsage':{'estimatedResponseCostUsd':0.1}})
         self.assertEqual(updated['monthlyEstimatedSpendUsd'], 2.12)
 
+    def test_budget_target_switches_to_eco_schedule_without_blocking(self):
+        budget = {'monthlyEstimatedSpendUsd': runner.MONTHLY_BUDGET_USD}
+        self.assertTrue(runner.budget_target_reached(budget))
+        previous = {'lastFullEpoch': 1000, 'topics': ['a', 'b', 'c', 'd']}
+        analyze, _ = runner.needs_analysis(
+            previous,
+            ['x', 'a', 'b', 'c'],
+            1000 + runner.ECO_MIN_ANALYSIS_SECONDS,
+            minimum_seconds=runner.ECO_MIN_ANALYSIS_SECONDS,
+            force_seconds=runner.ECO_FORCE_SECONDS,
+        )
+        self.assertTrue(analyze)
+
+    def test_budget_status_marks_saving_not_limited(self):
+        status = {}
+        runner.apply_budget_status(status, {
+            'budgetMonth': '2026-09',
+            'monthlyEstimatedSpendUsd': runner.MONTHLY_BUDGET_USD + 0.5,
+        }, True)
+        self.assertTrue(status['budgetSaving'])
+        self.assertFalse(status['budgetLimited'])
+
     def test_stable_check_publishes_truthful_timestamp_without_ai(self):
         with patch.object(runner, 'needs_analysis', return_value=(False, 'stable')), patch.object(runner, 'run_collector', return_value=0) as collect, patch.object(runner, 'publish'):
             self.assertEqual(runner.main(), 0)
@@ -104,3 +126,4 @@ class SchedulerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
