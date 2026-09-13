@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thirty-minute signals, change-aware AI analysis, and a monthly cost guard."""
+"""Thirty-minute signals, change-aware AI analysis, and a soft monthly budget target."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ HISTORY_PATHS = {
 }
 FORCE_SECONDS = int(os.environ.get("SUDDENLYWHY_FORCE_ANALYSIS_SECONDS", "10800"))
 MIN_ANALYSIS_SECONDS = int(os.environ.get("SUDDENLYWHY_MIN_ANALYSIS_SECONDS", "3600"))
+ECO_FORCE_SECONDS = int(os.environ.get("SUDDENLYWHY_ECO_FORCE_ANALYSIS_SECONDS", "43200"))
+ECO_MIN_ANALYSIS_SECONDS = int(os.environ.get("SUDDENLYWHY_ECO_MIN_ANALYSIS_SECONDS", "14400"))
 MIN_CHECK_SECONDS = 15 * 60
 MONTHLY_BUDGET_USD = float(os.environ.get("SUDDENLYWHY_MONTHLY_BUDGET_USD", "5.50"))
 BUDGET_RUN_RESERVE_USD = float(os.environ.get("SUDDENLYWHY_BUDGET_RUN_RESERVE_USD", "0.20"))
@@ -104,9 +106,9 @@ def prepare_budget(previous: dict, remote_status: dict, now_epoch: int) -> dict:
     }
 
 
-def budget_allows_analysis(budget: dict) -> bool:
+def budget_target_reached(budget: dict) -> bool:
     spent = float(budget.get("monthlyEstimatedSpendUsd") or 0.0)
-    return spent + BUDGET_RUN_RESERVE_USD <= MONTHLY_BUDGET_USD
+    return spent + BUDGET_RUN_RESERVE_USD > MONTHLY_BUDGET_USD
 
 
 def add_analysis_cost(budget: dict, status: dict) -> dict:
@@ -124,26 +126,34 @@ def add_analysis_cost(budget: dict, status: dict) -> dict:
     return updated
 
 
-def apply_budget_status(status: dict, budget: dict, limited: bool) -> None:
+def apply_budget_status(status: dict, budget: dict, saving: bool) -> None:
     spent = float(budget.get("monthlyEstimatedSpendUsd") or 0.0)
     status.update(
         budgetMonth=budget["budgetMonth"],
         monthlyBudgetUsd=round(MONTHLY_BUDGET_USD, 2),
         monthlyEstimatedSpendUsd=round(spent, 4),
         monthlyBudgetRemainingUsd=round(max(0.0, MONTHLY_BUDGET_USD - spent), 4),
-        budgetLimited=limited,
+        budgetLimited=False,
+        budgetSaving=saving,
     )
 
 
-def needs_analysis(previous: dict, current_topics: list[str], now_epoch: int) -> tuple[bool, str]:
+def needs_analysis(
+    previous: dict,
+    current_topics: list[str],
+    now_epoch: int,
+    *,
+    minimum_seconds: int = MIN_ANALYSIS_SECONDS,
+    force_seconds: int = FORCE_SECONDS,
+) -> tuple[bool, str]:
     last_full = int(previous.get("lastFullEpoch") or 0)
     previous_topics = [str(value) for value in previous.get("topics") or []]
     if not FINAL_PATH.exists() or not previous_topics:
         return True, "first full analysis"
-    if 0 <= now_epoch - last_full < MIN_ANALYSIS_SECONDS:
+    if 0 <= now_epoch - last_full < minimum_seconds:
         return False, "minimum paid-analysis interval"
-    if now_epoch - last_full >= FORCE_SECONDS:
-        return True, "three-hour safety refresh"
+    if now_epoch - last_full >= force_seconds:
+        return True, "scheduled safety refresh"
     if set(current_topics[:3]) != set(previous_topics[:3]):
         return True, "a new topic entered the top three"
     changed = len(set(current_topics).symmetric_difference(previous_topics))
@@ -229,11 +239,16 @@ def main() -> int:
     checked_at = datetime.now(timezone.utc).isoformat()
     now_epoch = int(datetime.now(timezone.utc).timestamp())
     topics = topics_from_raw()
-    analyze, reason = needs_analysis(previous, topics, now_epoch)
-    budget_limited = analyze and not budget_allows_analysis(budget)
-    if budget_limited:
-        analyze = False
-        reason = "monthly AI budget guard"
+    budget_saving = budget_target_reached(budget)
+    analyze, reason = needs_analysis(
+        previous,
+        topics,
+        now_epoch,
+        minimum_seconds=ECO_MIN_ANALYSIS_SECONDS if budget_saving else MIN_ANALYSIS_SECONDS,
+        force_seconds=ECO_FORCE_SECONDS if budget_saving else FORCE_SECONDS,
+    )
+    if budget_saving:
+        reason = f"budget-saving mode: {reason}"
     print(f"[scheduler] {reason}; full_analysis={str(analyze).lower()}")
     result_code = 0
     if analyze:
@@ -244,8 +259,8 @@ def main() -> int:
     status = read_json(STATUS_PATH, {})
     status["lastCheckedAt"] = checked_at
     status["checkIntervalMinutes"] = 30
-    status["analysisIntervalMinutes"] = FORCE_SECONDS // 60
-    apply_budget_status(status, budget, budget_limited)
+    status["analysisIntervalMinutes"] = (ECO_FORCE_SECONDS if budget_saving else FORCE_SECONDS) // 60
+    apply_budget_status(status, budget, budget_saving)
     if result_code and status.get("state") not in {"error", "quota_exhausted"}:
         status.update(state="error", message="전체 분석에 실패했습니다. 마지막 정상 순위를 유지합니다.")
     write_json(STATUS_PATH, status)
@@ -260,3 +275,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
