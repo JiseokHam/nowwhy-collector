@@ -8,7 +8,9 @@ permissions:
 
 concurrency:
   group: nowwhy-collector
-  cancel-in-progress: false
+  # If GitHub leaves a runner stuck in "Starting job", the next trigger replaces it
+  # instead of blocking every later refresh behind the stale run.
+  cancel-in-progress: true
 
 jobs:
   collect:
@@ -37,6 +39,8 @@ jobs:
           SUDDENLYWHY_DATA_DIR: ${{ github.workspace }}/collector/data
           SUDDENLYWHY_FORCE_ANALYSIS_SECONDS: 10800
           SUDDENLYWHY_MIN_ANALYSIS_SECONDS: 3600
+          SUDDENLYWHY_ECO_FORCE_ANALYSIS_SECONDS: 43200
+          SUDDENLYWHY_ECO_MIN_ANALYSIS_SECONDS: 14400
           SUDDENLYWHY_MONTHLY_BUDGET_USD: 5.50
           SUDDENLYWHY_BUDGET_RUN_RESERVE_USD: 0.20
           SUDDENLYWHY_BUDGET_COST_MULTIPLIER: 1.20
@@ -49,3 +53,4 @@ jobs:
         with:
           path: collector/data
           key: nowwhy-data-${{ github.run_id }}
+
