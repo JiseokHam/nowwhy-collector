@@ -45,7 +45,7 @@ BROAD_NEWS_PER_QUERY = 10
 BROAD_MAX_ARTICLES = 30
 
 FAST_MODEL = os.getenv("SUDDENLYWHY_FAST_MODEL", "gpt-5.6-luna")
-VERIFY_MODEL = os.getenv("SUDDENLYWHY_VERIFY_MODEL", "gpt-5.6-terra")
+VERIFY_MODEL = os.getenv("SUDDENLYWHY_VERIFY_MODEL", FAST_MODEL)
 MODEL = FAST_MODEL
 EMBEDDING_MODEL = os.getenv("SUDDENLYWHY_EMBEDDING_MODEL", "text-embedding-3-small")
 USE_EMBEDDINGS = os.getenv("SUDDENLYWHY_USE_EMBEDDINGS", "1").strip().lower() not in {"0", "false", "no", "off"}
